@@ -1,0 +1,109 @@
+services:
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+      POSTGRES_DB: sparks
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: admin
+      MINIO_ROOT_PASSWORD: password123
+    volumes:
+      - ./minio_data:/data
+
+
+  api:
+    build: ./api
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - RAW_BUCKET=raw-payloads
+
+  worker:
+    build: ./worker
+    depends_on:
+      - redis
+      - postgres
+      - minio
+    environment:
+      - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minio
+      - MINIO_SECRET_KEY=minio123
+      - RAW_BUCKET=raw-payloads
+
+  keyword-sync:
+    build: ./keyword_sync
+    depends_on:
+      - redis
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - GOOGLE_SA_JSON=/secrets/google-service-account.json
+    volumes:
+      - ./secrets:/secrets:ro
+
+  funnel-etl:
+    build: ./etl
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
+      - REDIS_URL=redis://redis:6379/0
+    # Not always run: run manually with `docker compose run funnel-etl` or schedule with cron/k8s
+
+  db-init:
+    image: postgres:15
+    depends_on:
+      - postgres
+    volumes:
+      - ./db/init.sql:/scripts/init.sql:ro
+    environment:
+      PGPASSWORD: secret
+    entrypoint:
+      - bash
+      - -c
+      - |
+        until pg_isready -h postgres -p 5432; do sleep 1; done
+        psql -h postgres -U app -d sparks -f /scripts/init.sql
+    restart: "no"
+
+  etl-funnel:
+    build: ./backend
+    command: python etl_funnel.py
+    depends_on:
+      - postgres
+    environment:
+      - PYTHONUNBUFFERED=1
+
+
+volumes:
+  pgdata:
+  miniodata:
