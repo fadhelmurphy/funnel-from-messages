@@ -1,4 +1,3 @@
-# worker/worker.py
 import os, asyncio, json, datetime
 import asyncpg, boto3
 import redis.asyncio as redis_lib
@@ -9,7 +8,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
 )
-logger = logging.getLogger()  # ambil root logger
+logger = logging.getLogger()
 
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -45,7 +44,6 @@ async def process_entry(pool, s3, entry):
 
     async with pool.acquire() as conn:
         now = datetime.datetime.utcnow()
-        # upsert room
         r = await conn.fetchrow("SELECT id FROM rooms WHERE room_id=$1", room_key)
         if r:
             room_id = r["id"]
@@ -59,7 +57,6 @@ async def process_entry(pool, s3, entry):
         sender = payload.get("sender",{}) or {}
         content = payload.get("message",{}).get("text") or json.dumps(payload.get("message") or {})
 
-        # insert message with idempotency (msg_id)
         try:
             timestamp_str = payload.get("timestamp")
             created_at = dateparser.parse(timestamp_str) if timestamp_str else now
@@ -72,7 +69,6 @@ async def process_entry(pool, s3, entry):
             print(e, "<< error cuy")
             pass
 
-        # Note: do NOT create funnel here. ETL job handles funnel computation (to keep separation of concerns).
 
 async def consumer():
     s3 = s3_client()

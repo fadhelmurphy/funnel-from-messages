@@ -43,10 +43,8 @@ async def run_funnel_etl():
                 if not msgs:
                     continue
                 
-                # ambil opening keywords dari Redis
                 kwset = await redis.smembers("keywords:opening")
                 kwset = [k.decode().lower() for k in kwset] if kwset else []
-                # ambil keyword booking & transaction dari Redis
                 booking_kwset = await redis.smembers("keywords:booking")
                 BOOKING_KEYWORDS = [k.decode().lower() for k in booking_kwset] if booking_kwset else BOOKING_KEYWORDS
 
@@ -65,13 +63,11 @@ async def run_funnel_etl():
                     text = (m.get("content") or "").lower()
                     created = m.get("created_at")
 
-                    # phone
                     phone = phone or m.get("phone")
                     raw = m.get("raw_payload")
                     if isinstance(raw, dict):
                         phone = phone or raw.get("sender", {}).get("phone") or raw.get("phone")
 
-                    # leads detection (opening keyword)
                     if not leads_date:
                         for kw in kwset:
                             if kw and kw in text:
@@ -83,11 +79,9 @@ async def run_funnel_etl():
                             if sender_type and sender_type.lower() == "customer":
                                 leads_date = created.date() if isinstance(created, datetime.datetime) else created
 
-                    # booking detection
                     for kw in BOOKING_KEYWORDS:
                         if kw in text:
                             try:
-                                # get date with regex
                                 import re
                                 match = re.search(r"\d{4}-\d{2}-\d{2}", text)
                                 if match:
@@ -95,7 +89,6 @@ async def run_funnel_etl():
                             except Exception:
                                 pass
 
-                    # transaction detection
                     for kw in TRANSACTION_KEYWORDS:
                         if kw in text:
                             transaction_date = created.date() if isinstance(created, datetime.datetime) else created
@@ -103,7 +96,7 @@ async def run_funnel_etl():
                             if match:
                                 # clean format 1.500.000 -> 1500000
                                 transaction_value = float(match.group().replace(".", "").replace(",", ""))
-                # Upsert ke funnel
+
                 await conn.execute("""
                 INSERT INTO funnel (room_id, leads_date, channel, phone, booking_date, transaction_date, transaction_value, opening_keyword, created_at)
                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)

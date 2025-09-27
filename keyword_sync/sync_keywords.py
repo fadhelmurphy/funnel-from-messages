@@ -15,7 +15,6 @@ SHEET_KEY = os.getenv("GSHEET_KEY")
 SA_JSON = os.getenv("GOOGLE_SA_JSON", "/secrets/google-service-account.json")
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "60"))
 
-# fallback hardcoded keywords per category
 HARDCODED_KEYWORDS = {
     "opening": ["halo", "hai", "selamat pagi"],
     "booking": ["booking", "reserve", "daftar"],

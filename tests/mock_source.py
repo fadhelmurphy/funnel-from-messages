@@ -1,4 +1,3 @@
-# mock_source.py
 import requests
 import random
 import datetime

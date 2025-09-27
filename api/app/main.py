@@ -1,4 +1,3 @@
-# api/app/main.py
 import os, json, uuid, datetime
 from fastapi import FastAPI, Request, HTTPException
 import redis.asyncio as redis
@@ -57,7 +56,6 @@ async def webhook(request: Request):
     except Exception as e:
         print("S3 put error:", e)
 
-    # push to redis stream
     stream_key = "incoming:messages"
     entry = {
         "provider": channel,

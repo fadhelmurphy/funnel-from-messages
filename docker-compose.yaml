@@ -95,7 +95,7 @@ services:
   funnel-etl:
     build: ./etl
     volumes:
-      - ./etl:/app  # mount folder etl lokal ke /app di container
+      - ./etl:/app
     working_dir: /app
     depends_on:
       postgres:
@@ -112,7 +112,6 @@ services:
       - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
       - REDIS_URL=redis://redis:6379/0
       - PYTHONUNBUFFERED=1
-    # Not always run: run manually with `docker compose run funnel-etl` or schedule with cron/k8s
 
   db-init:
     image: postgres:15

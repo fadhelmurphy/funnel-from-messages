@@ -1,4 +1,3 @@
-# api/app/db.py
 import os, asyncpg
 from typing import Optional
 
