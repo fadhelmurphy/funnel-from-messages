@@ -3,6 +3,13 @@ import os, asyncio, json, datetime
 import asyncpg, boto3
 import redis.asyncio as redis_lib
 from botocore.client import Config
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger()  # ambil root logger
 
 REDIS_URL = os.getenv("REDIS_URL")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -22,6 +29,8 @@ def s3_client():
     )
 
 async def process_entry(pool, s3, entry):
+    from dateutil import parser as dateparser
+
     data = {k.decode(): v.decode() for k,v in entry.items()}
     key = data.get("raw_object_key")
     room_key = data.get("room_id")
@@ -49,15 +58,18 @@ async def process_entry(pool, s3, entry):
         msg_id = payload.get("message",{}).get("id") or payload.get("msg_id")
         sender = payload.get("sender",{}) or {}
         content = payload.get("message",{}).get("text") or json.dumps(payload.get("message") or {})
-        created_at = payload.get("timestamp") or now.isoformat()
+
         # insert message with idempotency (msg_id)
         try:
+            timestamp_str = payload.get("timestamp")
+            created_at = dateparser.parse(timestamp_str) if timestamp_str else now
             await conn.execute(
                 "INSERT INTO messages (room_id, msg_id, sender_type, sender_id, phone, content, raw_payload, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)",
                 room_id, msg_id, sender.get("type") or payload.get("sender_type"), sender.get("id"),
                 sender.get("phone") or payload.get("phone"), content, json.dumps(payload), created_at
             )
-        except Exception:
+        except Exception as e:
+            print(e, "<< error cuy")
             pass
 
         # Note: do NOT create funnel here. ETL job handles funnel computation (to keep separation of concerns).

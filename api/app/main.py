@@ -32,33 +32,37 @@ async def shutdown():
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    # Generic webhook entrypoint. Accepts provider payloads.
     try:
         data = await request.json()
     except Exception:
         raise HTTPException(status_code=400, detail="invalid json")
 
-    provider = data.get("provider") or data.get("source") or "unknown"
+    channel = data.get("channel") or data.get("source") or "unknown"
     room_id = data.get("room_id") or data.get("room", {}).get("id") or data.get("roomId")
     if not room_id:
         room_id = f"room_unknown_{uuid.uuid4().hex[:8]}"
 
     ts = datetime.datetime.utcnow().isoformat()
-    key = f"raw/{provider}/{room_id}/{ts}.json"
-    raw_json = json.dumps(data)
+    key_json = f"raw/{channel}/{room_id}/{ts}.json"
+    raw_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
 
-    # upload to minio
     try:
-        app.state.s3.put_object(Bucket=RAW_BUCKET, Key=key, Body=raw_json.encode("utf-8"))
+        app.state.s3.put_object(
+            Bucket=RAW_BUCKET,
+            Key=key_json,
+            Body=raw_bytes,
+            ContentType="application/json"
+        )
+        print(f"Uploaded raw JSON to MinIO: {key_json}")
     except Exception as e:
-        print("s3 put error", e)
+        print("S3 put error:", e)
 
     # push to redis stream
     stream_key = "incoming:messages"
     entry = {
-        "provider": provider,
+        "provider": channel,
         "room_id": room_id,
-        "raw_object_key": key,
+        "raw_object_key": key_json,
         "received_at": ts
     }
     await app.state.redis.xadd(stream_key, entry)
@@ -68,38 +72,44 @@ async def webhook(request: Request):
 @app.post("/sync-keywords")
 async def manual_sync_keywords(body: dict):
     """
-    Manual upload of keywords (for testing). Body: {"keywords": ["booking","daftar"]}
-    In production, keyword-sync service will push keywords to Redis set.
+    Upload keywords per kategori.
+    Body example:
+    {
+        "opening": ["halo","hai"],
+        "booking": ["booking","reserve"],
+        "transaction": ["bayar","lunas"]
+    }
     """
-    keywords = body.get("keywords", [])
-    if not isinstance(keywords, list):
-        raise HTTPException(status_code=400, detail="keywords must be a list")
     redis = app.state.redis
-    if keywords:
-        await redis.delete("keywords:opening")
-        for k in keywords:
-            await redis.sadd("keywords:opening", k)
-    return {"ok": True, "count": len(keywords)}
 
-@app.get("/funnel-report")
-async def funnel_report(start: str = None, end: str = None):
-    """
-    Simple report aggregated from funnel table.
-    """
-    pool = app.state.db
-    sql = "SELECT channel, COUNT(*) as leads_count, COUNT(booking_date) FILTER (WHERE booking_date IS NOT NULL) as bookings_count, SUM(transaction_value) as transaction_value_sum FROM funnel WHERE 1=1"
-    params = []
-    if start:
-        sql += " AND leads_date >= $1"
-        params.append(start)
-    if end:
-        if not params:
-            sql += " AND leads_date <= $1"
-            params.append(end)
-        else:
-            sql += " AND leads_date <= ${}".format(len(params)+1)
-            params.append(end)
-    sql += " GROUP BY channel"
-    async with pool.acquire() as conn:
-        rows = await conn.fetch(sql, *params) if params else await conn.fetch(sql)
-    return [dict(r) for r in rows]
+    for category in ["opening", "booking", "transaction"]:
+        kws = body.get(category, [])
+        if kws:
+            await redis.delete(f"keywords:{category}")
+            for k in kws:
+                await redis.sadd(f"keywords:{category}", k)
+
+    return {"ok": True, "counts": {c: len(body.get(c, [])) for c in ["opening","booking","transaction"]}}
+
+# @app.get("/funnel-report")
+# async def funnel_report(start: str = None, end: str = None):
+#     """
+#     Simple report aggregated from funnel table.
+#     """
+#     pool = app.state.db
+#     sql = "SELECT channel, COUNT(*) as leads_count, COUNT(booking_date) FILTER (WHERE booking_date IS NOT NULL) as bookings_count, SUM(transaction_value) as transaction_value_sum FROM funnel WHERE 1=1"
+#     params = []
+#     if start:
+#         sql += " AND leads_date >= $1"
+#         params.append(start)
+#     if end:
+#         if not params:
+#             sql += " AND leads_date <= $1"
+#             params.append(end)
+#         else:
+#             sql += " AND leads_date <= ${}".format(len(params)+1)
+#             params.append(end)
+#     sql += " GROUP BY channel"
+#     async with pool.acquire() as conn:
+#         rows = await conn.fetch(sql, *params) if params else await conn.fetch(sql)
+#     return [dict(r) for r in rows]

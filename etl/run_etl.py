@@ -1,40 +1,58 @@
-# etl/run_etl.py
 import os, re, asyncio, datetime
 import asyncpg
 import redis.asyncio as redis_lib
 from dateutil import parser as dateparser
+import logging
 
-DATABASE_URL = os.getenv("DATABASE_URL")
-REDIS_URL = os.getenv("REDIS_URL")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger()  
 
-# keywords for booking and transaction (can extend)
+DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://app:secret@postgres:5432/sparks")
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379/0")
+
 BOOKING_KEYWORDS = ["booking", "book", "daftar", "reserve", "registrasi", "registr"]
 TRANSACTION_KEYWORDS = ["paid", "transfer", "bayar", "pembayaran", "lunas", "sudah transfer"]
 
-money_re = re.compile(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)")  # naive money matcher
+POLL_SECONDS = int(os.getenv("POLL_SECONDS", "3"))
 
-async def run_etl():
+money_re = re.compile(r"(\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?)")
+
+async def run_funnel_etl():
     redis = await redis_lib.from_url(REDIS_URL)
     pool = await asyncpg.create_pool(DATABASE_URL, min_size=1, max_size=5)
+    print("START FUNNEL ETL")
+
     try:
-        # fetch rooms
         async with pool.acquire() as conn:
+
             rooms = await conn.fetch("SELECT id, room_id, channel FROM rooms")
+
             for r in rooms:
                 room_db_id = r["id"]
-                # skip if already exists in funnel (simple logic; can upsert instead)
-                exists = await conn.fetchval("SELECT 1 FROM funnel WHERE room_id=$1", room_db_id)
-                if exists:
-                    continue
 
-                # fetch messages for room ordered
-                msgs = await conn.fetch("SELECT content, raw_payload, created_at FROM messages WHERE room_id=$1 ORDER BY created_at ASC", room_db_id)
+                msgs = await conn.fetch("""
+                    SELECT phone, content, raw_payload, created_at
+                    FROM messages
+                    WHERE room_id=$1
+                    ORDER BY created_at ASC
+                """, room_db_id)
+
                 if not msgs:
                     continue
-
-                # load keywords from redis
+                
+                # ambil opening keywords dari Redis
                 kwset = await redis.smembers("keywords:opening")
                 kwset = [k.decode().lower() for k in kwset] if kwset else []
+                # ambil keyword booking & transaction dari Redis
+                booking_kwset = await redis.smembers("keywords:booking")
+                BOOKING_KEYWORDS = [k.decode().lower() for k in booking_kwset] if booking_kwset else BOOKING_KEYWORDS
+
+                transaction_kwset = await redis.smembers("keywords:transaction")
+                TRANSACTION_KEYWORDS = [k.decode().lower() for k in transaction_kwset] if transaction_kwset else TRANSACTION_KEYWORDS
+
 
                 leads_date = None
                 opening_keyword = None
@@ -44,89 +62,84 @@ async def run_etl():
                 phone = None
 
                 for m in msgs:
-                    text = (m["content"] or "").lower()
-                    created = m["created_at"]
-                    # try set phone from raw payload
-                    try:
-                        raw = m["raw_payload"]
-                        if isinstance(raw, dict):
-                            phone = phone or raw.get("sender",{}).get("phone") or raw.get("phone")
-                        else:
-                            # raw stored as json string sometimes
-                            pass
-                    except Exception:
-                        pass
+                    text = (m.get("content") or "").lower()
+                    created = m.get("created_at")
 
-                    # leads = opening keyword first
+                    # phone
+                    phone = phone or m.get("phone")
+                    raw = m.get("raw_payload")
+                    if isinstance(raw, dict):
+                        phone = phone or raw.get("sender", {}).get("phone") or raw.get("phone")
+
+                    # leads detection (opening keyword)
                     if not leads_date:
-                        # check opening keywords
                         for kw in kwset:
                             if kw and kw in text:
-                                leads_date = created.date() if isinstance(created, datetime.date) is False else created
+                                leads_date = created.date() if isinstance(created, datetime.datetime) else created
                                 opening_keyword = kw
                                 break
-                        # fallback: first customer message as lead if still empty
-                        if not leads_date:
-                            # we assume sender type marked in raw_payload
+                        if not leads_date and isinstance(raw, dict):
+                            sender_type = raw.get("sender", {}).get("type") or raw.get("sender_type")
+                            if sender_type and sender_type.lower() == "customer":
+                                leads_date = created.date() if isinstance(created, datetime.datetime) else created
+
+                    # booking detection
+                    for kw in BOOKING_KEYWORDS:
+                        if kw in text:
                             try:
-                                raw = m["raw_payload"]
-                                if isinstance(raw, dict):
-                                    sender_type = raw.get("sender",{}).get("type") or raw.get("sender_type")
-                                    if sender_type and sender_type.lower() == "customer":
-                                        leads_date = created.date() if hasattr(created, "date") else created
+                                # get date with regex
+                                import re
+                                match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+                                if match:
+                                    booking_date = datetime.datetime.strptime(match.group(), "%Y-%m-%d").date()
                             except Exception:
                                 pass
 
-                    # booking detection
-                    if not booking_date:
-                        for bk in BOOKING_KEYWORDS:
-                            if bk in text:
-                                # try parse date inside text
-                                dt = None
-                                # search for date like yyyy-mm-dd
-                                mdate = re.search(r"(20\d{2}[-/]\d{1,2}[-/]\d{1,2})", text)
-                                if mdate:
-                                    try:
-                                        dt = dateparser.parse(mdate.group(1)).date()
-                                    except:
-                                        pass
-                                booking_date = dt or (created.date() if hasattr(created, "date") else created)
-
                     # transaction detection
-                    if not transaction_date:
-                        for tk in TRANSACTION_KEYWORDS:
-                            if tk in text:
-                                transaction_date = created.date() if hasattr(created, "date") else created
-                                # try extract money value
-                                mm = money_re.search(text.replace(" ", ""))
-                                if mm:
-                                    val = mm.group(1).replace(".", "").replace(",", ".")
-                                    try:
-                                        transaction_value = float(val)
-                                    except:
-                                        transaction_value = None
-                                break
-
-                    if leads_date and booking_date and transaction_date:
-                        break
-
-                # insert into funnel
-                await conn.execute(
-                    "INSERT INTO funnel (room_id, leads_date, channel, phone, booking_date, transaction_date, transaction_value, opening_keyword, created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)",
-                    room_db_id,
-                    leads_date,
-                    r["channel"],
-                    phone,
-                    booking_date,
-                    transaction_date,
-                    transaction_value,
-                    opening_keyword,
-                    datetime.datetime.utcnow()
+                    for kw in TRANSACTION_KEYWORDS:
+                        if kw in text:
+                            transaction_date = created.date() if isinstance(created, datetime.datetime) else created
+                            match = money_re.search(text)
+                            if match:
+                                # clean format 1.500.000 -> 1500000
+                                transaction_value = float(match.group().replace(".", "").replace(",", ""))
+                # Upsert ke funnel
+                await conn.execute("""
+                INSERT INTO funnel (room_id, leads_date, channel, phone, booking_date, transaction_date, transaction_value, opening_keyword, created_at)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+                ON CONFLICT (room_id) DO UPDATE SET
+                    leads_date = EXCLUDED.leads_date,
+                    channel = EXCLUDED.channel,
+                    phone = EXCLUDED.phone,
+                    booking_date = EXCLUDED.booking_date,
+                    transaction_date = EXCLUDED.transaction_date,
+                    transaction_value = EXCLUDED.transaction_value,
+                    opening_keyword = EXCLUDED.opening_keyword;
+                """,
+                room_db_id,
+                leads_date,
+                r["channel"],
+                phone,
+                booking_date,
+                transaction_date,
+                transaction_value,
+                opening_keyword,
+                datetime.datetime.utcnow()
                 )
-                print(f"funnel inserted for room {r['room_id']}")
+                logging.info(f"[OK] funnel upserted for room {r['room_id']}")
+
     finally:
         await redis.aclose()
         await pool.close()
 
+
+async def main_loop():
+    while True:
+        try:
+            await run_funnel_etl()
+        except Exception as e:
+            print("etl error", e)
+        await asyncio.sleep(POLL_SECONDS)
+
 if __name__ == "__main__":
-    asyncio.run(run_etl())
+    asyncio.run(main_loop())

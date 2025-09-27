@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS funnel (
   transaction_date DATE,
   transaction_value NUMERIC,
   opening_keyword TEXT,
-  created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT now(),
+  UNIQUE(room_id)
 );
+
 CREATE INDEX IF NOT EXISTS idx_funnel_leadsdate ON funnel(leads_date);

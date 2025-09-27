@@ -9,6 +9,11 @@ services:
       - pgdata:/var/lib/postgresql/data
     ports:
       - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sparks"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   redis:
     image: redis:7
@@ -32,51 +37,81 @@ services:
   api:
     build: ./api
     depends_on:
-      - postgres
-      - redis
-      - minio
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+      worker:
+        condition: service_started
     ports:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minio
-      - MINIO_SECRET_KEY=minio123
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password123
       - RAW_BUCKET=raw-payloads
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sparks"]
 
   worker:
     build: ./worker
     depends_on:
-      - redis
-      - postgres
-      - minio
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
       - REDIS_URL=redis://redis:6379/0
       - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minio
-      - MINIO_SECRET_KEY=minio123
+      - MINIO_ACCESS_KEY=admin
+      - MINIO_SECRET_KEY=password123
       - RAW_BUCKET=raw-payloads
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sparks"]
 
   keyword-sync:
     build: ./keyword_sync
     depends_on:
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      api:
+        condition: service_started
     environment:
       - REDIS_URL=redis://redis:6379/0
       - GOOGLE_SA_JSON=/secrets/google-service-account.json
+      - PYTHONUNBUFFERED=1
     volumes:
       - ./secrets:/secrets:ro
 
   funnel-etl:
     build: ./etl
+    volumes:
+      - ./etl:/app  # mount folder etl lokal ke /app di container
+    working_dir: /app
     depends_on:
-      - postgres
-      - redis
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      api:
+        condition: service_started
+      worker:
+        condition: service_started
+      keyword-sync:
+        condition: service_started
     environment:
       - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
       - REDIS_URL=redis://redis:6379/0
+      - PYTHONUNBUFFERED=1
     # Not always run: run manually with `docker compose run funnel-etl` or schedule with cron/k8s
 
   db-init:
@@ -94,15 +129,6 @@ services:
         until pg_isready -h postgres -p 5432; do sleep 1; done
         psql -h postgres -U app -d sparks -f /scripts/init.sql
     restart: "no"
-
-  etl-funnel:
-    build: ./backend
-    command: python etl_funnel.py
-    depends_on:
-      - postgres
-    environment:
-      - PYTHONUNBUFFERED=1
-
 
 volumes:
   pgdata:
