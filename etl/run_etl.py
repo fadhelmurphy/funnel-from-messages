@@ -74,10 +74,10 @@ async def run_funnel_etl():
                                 leads_date = created.date() if isinstance(created, datetime.datetime) else created
                                 opening_keyword = kw
                                 break
-                        if not leads_date and isinstance(raw, dict):
-                            sender_type = raw.get("sender", {}).get("type") or raw.get("sender_type")
-                            if sender_type and sender_type.lower() == "customer":
-                                leads_date = created.date() if isinstance(created, datetime.datetime) else created
+                    if not leads_date and isinstance(raw, dict):
+                        sender_type = raw.get("sender", {}).get("type") or raw.get("sender_type")
+                        if sender_type and sender_type.lower() == "customer":
+                            leads_date = created.date() if isinstance(created, datetime.datetime) else created
 
                     for kw in BOOKING_KEYWORDS:
                         if kw in text:

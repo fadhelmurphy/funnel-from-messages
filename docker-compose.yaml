@@ -47,6 +47,12 @@ services:
         condition: service_started
     ports:
       - "8000:8000"
+      - "7000:7000"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       - DATABASE_URL=postgresql://app:secret@postgres:5432/sparks
       - REDIS_URL=redis://redis:6379/0
@@ -57,8 +63,53 @@ services:
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U sparks"]
 
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    depends_on:
+      api:
+        condition: service_started
+      worker:
+        condition: service_started
+  
+  loki:
+    image: grafana/loki:2.9.0
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/local-config.yaml
+
+  promtail:
+    image: grafana/promtail:2.9.0
+    volumes:
+      - ./logs:/var/log/app
+      - ./promtail-config.yaml:/etc/promtail/config.yaml
+    command: -config.file=/etc/promtail/config.yaml
+
+  grafana:
+    image: grafana/grafana:10.1.1
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_started
+      worker:
+        condition: service_started
+      prometheus:
+        condition: service_started
+      loki:
+        condition: service_started
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./dashboard_grafana.json:/var/lib/grafana/dashboards/dashboard_grafana.json
+
   worker:
     build: ./worker
+    ports:
+      - "7001:7001"
     depends_on:
       postgres:
         condition: service_healthy

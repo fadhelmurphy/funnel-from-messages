@@ -3,6 +3,7 @@ import asyncpg, boto3
 import redis.asyncio as redis_lib
 from botocore.client import Config
 import logging
+from utils.observability import log_event, metrics, start_metrics_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -77,10 +78,13 @@ async def consumer():
     stream = "incoming:messages"
     group = "workers"
     consumer_name = f"worker-{os.getenv('HOSTNAME','1')}"
+    start_metrics_server(port=7001) 
     try:
         await redis.xgroup_create(stream, group, id="$", mkstream=True)
     except Exception:
         pass
+    pending = await redis.xpending(stream, group)
+    log_event("pending_check", stream=stream, pending_count=pending['pending'])
     while True:
         try:
             resp = await redis.xreadgroup(group, consumer_name, streams={stream: ">"}, count=10, block=5000)
@@ -91,6 +95,8 @@ async def consumer():
                 for msg_id, fields in messages:
                     await process_entry(pool, s3, fields)
                     await redis.xack(stream, group, msg_id)
+                    metrics.setdefault("redis_messages_ack", metrics["redis_messages_ack"].inc())
+                    log_event("message_ack", stream=stream, msg_id=msg_id)
         except Exception as e:
             print("worker error:", e)
             await asyncio.sleep(1)

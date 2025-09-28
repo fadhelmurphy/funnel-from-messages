@@ -89,3 +89,59 @@ python3 tests/export_report.py
 ```
 docker compose down -v
 ```
+
+
+## Monitoring dengan Prometheus, Grafana, dan Loki
+
+
+Sistem ini sudah dilengkapi **custom metrics** untuk memantau alur funnel lewat Redis:
+
+```python
+metrics = {
+    "redis_messages_total": Counter(
+        "redis_messages_total", "Total messages pushed to Redis stream"
+    ),
+    "redis_messages_ack": Counter(
+        "redis_messages_ack", "Total messages acknowledged (ACK) by worker"
+    ),
+    "redis_messages_pending": Gauge(
+        "redis_messages_pending", "Total messages still pending / not ACK"
+    )
+}
+```
+
+### Cara Kerja Metrics
+- redis_messages_total -> menghitung jumlah pesan yang masuk ke Redis Stream (traffic harian).
+
+- redis_messages_ack -> menghitung jumlah pesan yang berhasil diproses oleh Worker.
+
+- redis_messages_pending -> jumlah pesan yang belum diproses (indikasi backlog atau bottleneck).
+
+
+### Grafana
+
+#### Membuka Dashboard
+
+Akses Grafana di browser:
+
+```
+http://localhost:3000
+```
+
+- Pilih dashboard Sparks Project Monitoring
+
+Panel yang tersedia:
+
+- Message Ingress (redis_messages_total, rate per detik).
+
+- Message Processed (ACK) (redis_messages_ack).
+
+- Pending Messages (redis_messages_pending, gauge).
+
+Cara Membaca Metrics
+
+- Total Messages (Ingress) -> menunjukkan berapa banyak pesan masuk dari semua channel. Jika drop drastis -> kemungkinan ada masalah di API/webhook.
+
+- ACKed Messages -> menunjukkan jumlah pesan yang berhasil diproses worker. Idealnya grafik ini mendekati grafik ingress.
+
+- Pending Messages -> menunjukkan backlog. Jika angka ini terus naik tanpa turun -> bottleneck di worker, mungkin perlu scaling atau ada bug parsing.

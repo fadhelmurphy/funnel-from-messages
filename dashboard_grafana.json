@@ -1,0 +1,79 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": "-- Grafana --",
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "panels": [
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "redis_messages_total",
+          "interval": "",
+          "legendFormat": "Total Messages",
+          "refId": "A"
+        }
+      ],
+      "title": "Redis Messages Pushed",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Prometheus",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 8 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "list" } },
+      "targets": [
+        {
+          "expr": "redis_messages_ack_total",
+          "interval": "",
+          "legendFormat": "ACKed Messages",
+          "refId": "A"
+        },
+        {
+          "expr": "redis_messages_pending",
+          "interval": "",
+          "legendFormat": "Pending Messages",
+          "refId": "B"
+        }
+      ],
+      "title": "Redis Messages ACK / Pending",
+      "type": "timeseries"
+    },
+    {
+      "datasource": "Loki",
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 3,
+      "options": { "showLabels": true, "showTime": true, "wrapLogMessage": false },
+      "targets": [
+        { "expr": "{job=\"app\"}", "refId": "A" }
+      ],
+      "title": "Application Logs",
+      "type": "logs"
+    }
+  ],
+  "schemaVersion": 36,
+  "style": "dark",
+  "tags": ["redis", "logs", "monitoring"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "Sparks Project Monitoring",
+  "version": 1
+}

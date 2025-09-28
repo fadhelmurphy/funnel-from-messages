@@ -3,6 +3,8 @@ from fastapi import FastAPI, Request, HTTPException
 import redis.asyncio as redis
 from .utils_s3 import get_s3_client, ensure_bucket
 from .db import get_pool
+import io
+from .utils.observability import log_event, metrics, start_metrics_server
 
 REDIS_URL = os.getenv("REDIS_URL")
 MINIO_ENDPOINT = os.getenv("MINIO_ENDPOINT")
@@ -18,6 +20,9 @@ async def startup():
     app.state.s3 = get_s3_client(MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY)
     ensure_bucket(app.state.s3, RAW_BUCKET)
     app.state.db = await get_pool()
+    
+    start_metrics_server(7000)
+    log_event("app_started")
 
 @app.on_event("shutdown")
 async def shutdown():
@@ -43,7 +48,7 @@ async def webhook(request: Request):
 
     ts = datetime.datetime.utcnow().isoformat()
     key_json = f"raw/{channel}/{room_id}/{ts}.json"
-    raw_bytes = json.dumps(data, ensure_ascii=False).encode("utf-8")
+    raw_bytes = io.BytesIO(json.dumps(data).encode("utf-8"))
 
     try:
         app.state.s3.put_object(
@@ -52,9 +57,10 @@ async def webhook(request: Request):
             Body=raw_bytes,
             ContentType="application/json"
         )
-        print(f"Uploaded raw JSON to MinIO: {key_json}")
+        log_event("s3_upload_success", key=key_json, channel=channel)
     except Exception as e:
-        print("S3 put error:", e)
+        log_event("s3_upload_error", error=str(e))
+        raise HTTPException(status_code=500, detail="S3 put error")
 
     stream_key = "incoming:messages"
     entry = {
@@ -63,7 +69,13 @@ async def webhook(request: Request):
         "raw_object_key": key_json,
         "received_at": ts
     }
-    await app.state.redis.xadd(stream_key, entry)
+
+    try:
+        await app.state.redis.xadd(stream_key, entry)
+        metrics["redis_messages_total"].inc()
+    except Exception as e:
+        log_event("redis_xadd_error", error=str(e))
+        raise HTTPException(status_code=500, detail="Redis push error")
 
     return {"ok": True, "queued": True, "room_id": room_id}
 
